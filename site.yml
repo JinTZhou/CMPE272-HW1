@@ -1,0 +1,114 @@
+---
+# ==========================================================
+# DEPLOY
+# ==========================================================
+- name: Deploy web server
+  hosts: webservers
+  become: true
+  tags:
+    - deploy
+
+  tasks:
+
+    - name: Install nginx
+      ansible.builtin.dnf:
+        name: nginx
+        state: present
+
+    - name: Create web page
+      ansible.builtin.template:
+        src: templates/index.html.j2
+        dest: /usr/share/nginx/html/index.html
+        owner: nginx
+        group: nginx
+        mode: '0644'
+
+    - name: Configure nginx to listen on port 8080
+      ansible.builtin.copy:
+        dest: /etc/nginx/conf.d/sjsu.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          server {
+              listen 8080;
+              listen [::]:8080;
+
+              server_name _;
+
+              root /usr/share/nginx/html;
+              index index.html;
+
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+          }
+
+    - name: Allow HTTP service through firewalld
+      ansible.posix.firewalld:
+        port: 8080/tcp
+        permanent: true
+        state: enabled
+        immediate: true
+
+    - name: Allow nginx to listen on port 8080 with SELinux
+      ansible.builtin.command:
+        cmd: semanage port -a -t http_port_t -p tcp 8080
+      register: semanage_result
+      failed_when:
+        - semanage_result.rc != 0
+        - "'already defined' not in semanage_result.stderr"
+      changed_when: semanage_result.rc == 0
+
+    - name: Test nginx configuration
+      ansible.builtin.command:
+        cmd: nginx -t
+      changed_when: false
+
+    - name: Enable and restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+        enabled: true
+
+
+# ==========================================================
+# UNDEPLOY
+# ==========================================================
+- name: Un-deploy web server
+  hosts: webservers
+  become: true
+  tags:
+    - undeploy
+
+  tasks:
+
+    - name: Stop nginx
+      ansible.builtin.service:
+        name: nginx
+        state: stopped
+      failed_when: false
+
+    - name: Remove nginx configuration
+      ansible.builtin.file:
+        path: /etc/nginx/conf.d/sjsu.conf
+        state: absent
+
+    - name: Remove web page
+      ansible.builtin.file:
+        path: /usr/share/nginx/html/index.html
+        state: absent
+
+    - name: Remove firewall rule
+      ansible.posix.firewalld:
+        port: 8080/tcp
+        permanent: true
+        state: disabled
+        immediate: true
+      failed_when: false
+
+    - name: Uninstall nginx
+      ansible.builtin.dnf:
+        name: nginx
+        state: absent
+        autoremove: true
